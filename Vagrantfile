@@ -29,7 +29,7 @@ $installer = <<SCRIPT
 # Update apt and get dependencies
 sudo apt-get -y update
 sudo apt-get -y upgrade
-sudo apt-get install -y zip unzip curl wget socat ebtables git vim conntrack
+sudo apt-get install -y zip unzip curl wget socat ebtables git vim
 
 SCRIPT
 
@@ -76,15 +76,15 @@ sudo mv minikube /usr/local/bin/
 
 #Install kubectl
 echo "Downloading Kubectl"
-curl -q -Lo kubectl https://dl.k8s.io/release/v1.29.0/bin/linux/arm64/kubectl 2>/dev/null
+curl -q -Lo kubectl https://dl.k8s.io/release/v${KUBERNETES_VERSION}/bin/linux/arm64/kubectl 2>/dev/null
 chmod +x kubectl
 sudo mv kubectl /usr/local/bin/
 
 # Install Helm
 echo "Downloading Helm"
-curl -qL https://get.helm.sh/helm-v3.14.1-linux-arm64.tar.gz 2>/dev/null | tar xzvf -
-chmod +x linux-arm64/helm
-sudo mv linux-arm64/helm /usr/local/bin/
+curl -fsSL -o get_helm.sh https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3
+chmod 700 get_helm.sh
+./get_helm.sh
 
 #Setup minikube
 echo "127.0.0.1 minikube minikube." | sudo tee -a /etc/hosts
@@ -116,13 +116,11 @@ sudo -E minikube start -v 4 --vm-driver docker --kubernetes-version v${KUBERNETE
 sudo -E minikube addons  enable ingress
 
 ## Configure vagrant clients dir
-
 printf "export MINIKUBE_WANTUPDATENOTIFICATION=false\n" >> /home/vagrant/.bashrc
 printf "export MINIKUBE_WANTREPORTERRORPROMPT=false\n" >> /home/vagrant/.bashrc
 printf "export MINIKUBE_HOME=/home/vagrant\n" >> /home/vagrant/.bashrc
 printf "export CHANGE_MINIKUBE_NONE_USER=true\n" >> /home/vagrant/.bashrc
 printf "export KUBECONFIG=/home/vagrant/.kube/config\n" >> /home/vagrant/.bashrc
-printf "source <(kubectl completion bash)\n" >> /home/vagrant/.bashrc
 
 # Permissions
 sudo chown -R $USER:$USER $HOME/.kube
