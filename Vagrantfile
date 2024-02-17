@@ -20,7 +20,7 @@ DSTDIR = ENV['DSTDIR'] || "/home/vagrant/data"
 GROWPART = ENV['GROWPART'] || "true"
 
 # Minikube Variables
-KUBERNETES_VERSION = ENV['KUBERNETES_VERSION'] || "1.16.3"
+KUBERNETES_VERSION = ENV['KUBERNETES_VERSION'] || "1.29.0"
 
 # Common installation script
 $installer = <<SCRIPT
@@ -28,10 +28,8 @@ $installer = <<SCRIPT
 
 # Update apt and get dependencies
 sudo apt-get -y update
-sudo apt-mark hold grub
-sudo apt-mark hold grub-pc
 sudo apt-get -y upgrade
-sudo apt-get install -y zip unzip curl wget socat ebtables git vim
+sudo apt-get install -y zip unzip curl wget socat ebtables git vim conntrack
 
 SCRIPT
 
@@ -43,12 +41,14 @@ $docker = <<SCRIPT
 #sudo apt-get install -y docker-engine=17.03.1~ce-0~ubuntu-xenial
 
 curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo apt-key add -
-sudo add-apt-repository "deb [arch=amd64] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable"
+sudo add-apt-repository "deb [arch=arm64] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable"
 sudo apt-get -y update
 sudo apt-get install -y docker-ce
 sudo systemctl start docker
 
-sudo usermod -a -G docker vagrant
+sudo groupadd docker
+sudo usermod -a -G docker $USER
+newgrp docker
 
 SCRIPT
 
@@ -70,34 +70,21 @@ $minikubescript = <<SCRIPT
 
 #Install minikube
 echo "Downloading Minikube"
-curl -q -Lo minikube https://storage.googleapis.com/minikube/releases/latest/minikube-linux-amd64 2>/dev/null
+curl -q -Lo minikube https://storage.googleapis.com/minikube/releases/latest/minikube-linux-arm64 2>/dev/null
 chmod +x minikube
 sudo mv minikube /usr/local/bin/
 
 #Install kubectl
 echo "Downloading Kubectl"
-curl -q -Lo kubectl https://storage.googleapis.com/kubernetes-release/release/v${KUBERNETES_VERSION}/bin/linux/amd64/kubectl 2>/dev/null
+curl -q -Lo kubectl https://dl.k8s.io/release/v1.29.0/bin/linux/arm64/kubectl 2>/dev/null
 chmod +x kubectl
 sudo mv kubectl /usr/local/bin/
 
-# Install crictl
-curl -qL https://github.com/kubernetes-sigs/cri-tools/releases/download/v1.16.1/crictl-v1.16.1-linux-amd64.tar.gz 2>/dev/null | tar xzvf -
-chmod +x crictl
-sudo mv crictl /usr/local/bin/
-
-#Install stern
-# TODO: Check sha256sum
-echo "Downloading Stern"
-curl -q -Lo stern https://github.com/wercker/stern/releases/download/1.10.0/stern_linux_amd64 2>/dev/null
-chmod +x stern
-sudo mv stern /usr/local/bin/
-
-#Install kubecfg
-# TODO: Check sha256sum
-echo "Downloading Kubecfg"
-curl -q -Lo kubecfg https://github.com/ksonnet/kubecfg/releases/download/v0.9.0/kubecfg-linux-amd64 2>/dev/null
-chmod +x kubecfg
-sudo mv kubecfg /usr/local/bin/
+# Install Helm
+echo "Downloading Helm"
+curl -qL https://get.helm.sh/helm-v3.14.1-linux-arm64.tar.gz 2>/dev/null | tar xzvf -
+chmod +x linux-arm64/helm
+sudo mv linux-arm64/helm /usr/local/bin/
 
 #Setup minikube
 echo "127.0.0.1 minikube minikube." | sudo tee -a /etc/hosts
@@ -110,6 +97,8 @@ export KUBECONFIG=$HOME/.kube/config
 # Permissions
 sudo chown -R $USER:$USER $HOME/.kube
 sudo chown -R $USER:$USER $HOME/.minikube
+sudo chmod go-r $HOME/.kube/config
+sudo chmod -R u+wrx $HOME/.minikube
 
 export MINIKUBE_WANTUPDATENOTIFICATION=false
 export MINIKUBE_WANTREPORTERRORPROMPT=false
@@ -121,7 +110,7 @@ export KUBECONFIG=$HOME/.kube/config
 sudo swapoff -a
 
 ## Start minikube
-sudo -E minikube start -v 4 --vm-driver none --kubernetes-version v${KUBERNETES_VERSION} --bootstrapper kubeadm
+sudo -E minikube start -v 4 --vm-driver docker --kubernetes-version v${KUBERNETES_VERSION} --bootstrapper kubeadm --force
 
 ## Addons
 sudo -E minikube addons  enable ingress
@@ -145,49 +134,32 @@ sudo echo "vm.max_map_count=262144" | sudo tee -a /etc/sysctl.d/90-vm_max_map_co
 
 SCRIPT
 
-
-required_plugins = %w(vagrant-sshfs vagrant-vbguest vagrant-libvirt)
+required_plugins = %w(vagrant-sshfs vagrant-vbguest vagrant-vmware-desktop)
 
 required_plugins.each do |plugin|
-  need_restart = false
   unless Vagrant.has_plugin? plugin
     system "vagrant plugin install #{plugin}"
-    need_restart = true
   end
-  exec "vagrant #{ARGV.join(' ')}" if need_restart
 end
 
-
 def configureVM(vmCfg, hostname, cpus, mem, srcdir, dstdir)
-
-  vmCfg.vm.box = "roboxes/ubuntu1804"
+  vmCfg.vm.box = "spox/ubuntu-arm"
 
   vmCfg.vm.hostname = hostname
-  vmCfg.vm.network "private_network", type: "dhcp",  :model_type => "virtio", :autostart => true
+  vmCfg.vm.network "private_network", type: "dhcp", :model_type => "virtio", :autostart => true
 
   vmCfg.vm.synced_folder '.', '/vagrant', disabled: true
   # sync your laptop's development with this Vagrant VM
   vmCfg.vm.synced_folder srcdir, dstdir, type: "rsync", rsync__exclude: ".git/", create: true
 
-  # First Provider - Libvirt
-  vmCfg.vm.provider "libvirt" do |provider, override|
-    provider.memory = mem
-    provider.cpus = cpus
-    provider.driver = "kvm"
-    provider.disk_bus = "scsi"
-    provider.machine_virtual_size = 64
-    provider.video_vram = 64
+  # VMware Desktop provider
+  vmCfg.vm.provider "vmware_desktop" do |provider, override|
+    provider.vmx["memsize"] = mem
+    provider.vmx["numvcpus"] = cpus
 
+    # Add any other provider-specific configurations here
 
-    override.vm.synced_folder srcdir, dstdir, type: 'sshfs', ssh_opts_append: "-o Compression=yes", sshfs_opts_append: "-o cache=no", disabled: false, create: true
-  end
-
-  vmCfg.vm.provider "virtualbox" do |provider, override|
-    provider.memory = mem
-    provider.cpus = cpus
-    provider.customize ["modifyvm", :id, "--cableconnected1", "on"]
-
-    override.vm.synced_folder srcdir, dstdir, type: 'virtualbox', create: true
+    override.vm.synced_folder srcdir, dstdir, type: 'rsync', disabled: false, create: true
   end
 
   # ensure docker is installed # Use our script so we can get a proper support version
@@ -202,7 +174,6 @@ end
 
 # Entry point of this Vagrantfile
 Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
-
   config.vbguest.auto_update = false
 
   1.upto(NODES.to_i) do |i|
@@ -216,5 +187,4 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
       vmCfg = configureVM(vmCfg, hostname, cpus, mem, srcdir, dstdir)
     end
   end
-
 end
